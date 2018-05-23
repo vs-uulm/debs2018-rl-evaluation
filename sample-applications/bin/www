@@ -1,0 +1,115 @@
+#!/usr/bin/env node
+
+const fs = require('fs-extra');
+const http = require('http');
+const path = require('path');
+const express = require('express');
+const bodyParser = require('body-parser');
+
+const debug = require('debug')('rL:www');
+const shop = require('../routes/shop');
+
+const app = express();
+
+// Get port from environment or use 3000 as default
+const port = process.env.PORT || '3000';
+
+// Create HTTP server.
+const server = http.createServer(app);
+
+// eslint-disable-next-line import/no-dynamic-require
+const api = require(`../api/${process.env.API}`);
+const logPath = path.join('./logs', process.env.API, process.env.WORKLOAD);
+fs.ensureDirSync(logPath);
+
+let memoryMeasurement = null;
+const memoryStream = fs.createWriteStream(path.join(logPath, 'memory.csv'));
+const responseTimeStream = fs.createWriteStream(path.join(logPath, 'times.csv'));
+
+// stop measurements, once the http server is closed
+server.once('close', async () => {
+  if (memoryMeasurement !== null) {
+    clearInterval(memoryMeasurement);
+  }
+
+  const metrics = await api.getMetrics();
+  await api.exit();
+  await fs.outputFile(path.join(logPath, 'metrics.csv'), `${metrics}\n`);
+
+  responseTimeStream.end();
+  memoryStream.end();
+});
+
+// measurement middleware
+app.use((req, res, next) => {
+  const start = process.hrtime();
+
+  res.once('finish', () => {
+    const responseTime = process.hrtime(start);
+    responseTimeStream.write(`${req.method},${req.url},${(responseTime[0] * 1e9) + responseTime[1]}\n`);
+    memoryStream.write(`${process.memoryUsage().heapUsed}\n`);
+  });
+
+  if (memoryMeasurement === null) {
+    memoryMeasurement = setInterval(() => {
+      memoryStream.write(`${process.memoryUsage().heapUsed}\n`);
+    }, 1000);
+  }
+
+  next();
+});
+
+app.use(bodyParser.json());
+app.use('/shop', shop(server, api));
+
+// catch 404 and forward to error handler
+app.use((req, res, next) => {
+  const err = new Error('Not Found');
+  err.status = 404;
+  next(err);
+});
+
+// error handler
+app.use((err, req, res) => {
+  res.status(err.status || 500);
+  res.json({
+    error: err.status,
+    reason: err.message
+  });
+});
+
+module.exports = app;
+
+// Listen on provided port, on all network interfaces.
+server.listen(port);
+
+server.on('error', (error) => {
+  if (error.syscall !== 'listen') {
+    throw error;
+  }
+
+  const bind = `${typeof port === 'string' ? 'pipe' : 'port'} ${port}`;
+
+  // handle specific listen errors with friendly messages
+  switch (error.code) {
+    case 'EACCES':
+      console.error(`${bind} requires elevated privileges`);
+      process.exit(1);
+      break;
+
+    case 'EADDRINUSE':
+      console.error(`${bind} is already in use`);
+      process.exit(1);
+      break;
+
+    default:
+      throw error;
+  }
+});
+
+server.on('listening', () => {
+  const addr = server.address();
+  const bind = typeof addr === 'string' ? `pipe ${addr}` : `port ${addr.port}`;
+
+  debug(`Listening on ${bind}`);
+});

@@ -1,0 +1,22 @@
+metadata: {}
+pipelines:
+  comparison:
+    envs:
+    - host
+    path: pipelines/comparison
+    stages:
+    - setup
+    - run
+    - post-run
+    - validate
+    - teardown
+  retroaction:
+    envs:
+    - host
+    path: pipelines/retroaction
+    stages:
+    - setup
+    - run
+    - post-run
+    - validate
+    - teardown
